@@ -2,7 +2,6 @@
 {-# LANGUAGE OverloadedLists   #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE MultiWayIf        #-}
 
 module Main where
 
@@ -43,7 +42,7 @@ data Event = Guess Text
 
 stateBox :: State -> Widget Event
 stateBox s@(Game {..}) | chances > 1 = gameBox s
- i                     | otherwise   = endBox s
+                       | otherwise   = endBox s
  
 gameBox :: State -> Widget Event
 gameBox s = container Box [#orientation := OrientationVertical]
@@ -105,13 +104,13 @@ patternLabel s = widget Label [ Classes ["pattern"]
                                           (Text.pack $ getPattern s))]
 
 failLabel :: State -> Widget Event
-failLabeli Game {..} = widget Label
+failLabel Game {..} = widget Label
   [ classes ["red"]
   , #label := ("You have run out of guessess,\n the word was: " <>
               (Text.pack secret))]
 
 getPattern :: State -> String
-getPatterin Game {..} = intersperse ' ' $ f <$> secret
+getPattern Game {..} = intersperse ' ' $ f <$> secret
   where f x | (toUpper x) `elem` correct = toUpper x
 --          | (toUpper x) `elem` hints = toUpper x -- hint button adds
             | otherwise = '_'                      -- answer
