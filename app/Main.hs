@@ -2,66 +2,129 @@
 {-# LANGUAGE OverloadedLists   #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE MultiWayIf        #-}
 
 module Main where
 
-import Control.Monad                 (void)
-import Data.Functor                  (($>))
-import Data.Text                     (Text)
-import qualified Data.Text           as Text
-import GI.Gtk                        (Box (..), Button (..)
-                                     ,Label (..), Orientation (..)
-                                     ,Window (..), CheckButton (..)
-                                     ,Image (..), ListBoxRow (..)
-                                     , ListBox (..))
+import Utils                
+import Control.Monad                      (void)
+import Data.Text                          (Text, snoc, null)
+import Data.List                          (intersperse, intercalate)
+import qualified Data.Text                as Text
+import GI.Gtk                             ( entryGetText, entrySetText
+                                          ,Box (..), Button (..)
+                                          ,Label (..), Orientation (..)
+                                          ,Window (..), CheckButton (..)
+                                          ,Image (..), ListBoxRow (..)
+                                          ,ListBox (..), Entry (..))
+import qualified GI.Gtk                   as Gtk
+import qualified GI.Gdk                   as Gdk
 import GI.Gtk.Declarative
 import GI.Gtk.Declarative.App.Simple
-import System.Random (randomRIO)
-import Data.Char (toUpper)
-import Data.List (isPrefixOf, sort, (\\))
-import System.Directory (getDirectoryContents)
+import Data.Char                          (toUpper)
+import Data.List                          (isPrefixOf, sort, (\\))
+import System.Directory                   (getDirectoryContents)
+import Data.ByteString                    (ByteString)
+import Control.Concurrent.Async           (async)
 
-data State = Game { correct :: [Char]
-                  , wrongs  :: [Char]
-                  , hints   :: [Char]
-                  , secret  :: String
-                  , chances :: Int
-                  , try     :: Int
-                  , hangman :: [Text]
+data State = Game { correct    :: [Char]
+                  , wrongs     :: [Char]
+                  , secret     :: [Char]
+                  , hint       :: [Char]
+                  , chances    :: Int
+                  , hangman    :: [Text]
+                  , dictionary :: [[Char]]
                   }
 
-data Event a = Guess a | Wrong a | GetHint a | Quit | PlayAgain
+data Event = Guess Text
+           | GetHint Char
+           | PlayAgain [Char]
+           | Quit
 
-playAgainBtn :: Widget Button
-playAgainBtn = _
+stateBox :: State -> Widget Event
+stateBox s@(Game {..}) | chances > 1 = gameBox s
+                      | otherwise   = endBox s
 
-quitBtn :: Widget Button
-playAgainBtn = _
+gameBox :: State -> Widget Event
+gameBox s = container Box [#orientation := OrientationVertical]
+  [ BoxChild defaultBoxChildProperties { padding = 10 } guessBox
+  , BoxChild defaultBoxChildProperties { padding = 10 } $ hintLabel s
+  , BoxChild defaultBoxChildProperties { padding = 5 } $ hintBtn s
+  ]
 
-hintBtn :: Widget Button
-hintBtn = _
+endBox :: State -> Widget Event
+endBox s = container Box [#orientation := OrientationVertical]
+  [ BoxChild defaultBoxChildProperties { padding = 10 } $ failLabel s
+  , BoxChild defaultBoxChildProperties { padding = 5 } $ playAgainBtn s
+  , BoxChild defaultBoxChildProperties { padding = 5 } quitBtn
+  ]
 
-hintLabel :: Widget Label 
-hintLabel = _
+guessBox :: Widget Event
+guessBox = container Box [#orientation := OrientationHorizontal]
+  [ BoxChild defaultBoxChildProperties { expand = True } choseLabel
+  , BoxChild defaultBoxChildProperties { expand = True } guessEntry]
 
-wrongGuessesLabel :: Widget Box
-wrongGuessesLabel = _
+playAgainBtn :: State -> Widget Event
+playAgainBtn Game {..} = widget Button
+  [#label := "Play Again!", onM #clicked playAgain']
+  where playAgain' = \b -> PlayAgain <$> getRandom dictionary
 
-entry :: Widget Box
-entry = _
+quitBtn :: Widget Event
+quitBtn = widget Button [#label := "No More!", on #clicked Quit]
 
-patternLabel :: Widget Label
-patternLabel = "Pattern: "
+hintBtn :: State -> Widget Event
+hintBtn Game {..} = widget Button
+  [#label := "Get a hint!", onM #clicked hintEvent]
+  where hintEvent = \b -> GetHint <$> getRandom (secret \\ correct)
 
+hintLabel :: State -> Widget Event
+hintLabel Game {..} = case (Prelude.null hint) of
+  True -> widget Label [#label := ""]
+  False -> widget Label
+    [ classes ["blue"]
+    , #label := ("Consider choosing: " <> Text.pack hint)]
 
-getSecret :: [String] -> IO String
-getSecret xs = fmap (xs !!) $ randomRIO (0, length xs - 1)
+wrongGuessesLabel :: State -> Widget Event
+wrongGuessesLabel Game {..} = widget Label
+  [#label := ("Wrong guesses: " <> (Text.pack wrongs'))]
+  where wrongs' = intercalate ", " ((\c -> [c]) <$> wrongs)
 
-getHint :: State -> Char
-getHint (Game c w h s ch t p) = head $ (s \\ c) \\ h
+choseLabel:: Widget Event
+choseLabel = widget Label [#label := "Choose a letter: "]
 
-view' :: State -> AppView Window (Event Char)
-view' Game {..} = 
+guessEntry :: Widget Event
+guessEntry = widget Entry [#text := "", onM #activate toGuessEvent]
+  where toGuessEvent w = do
+          input <- Guess <$> entryGetText w
+          entrySetText w ""
+          return input
+
+patternLabel :: State -> Widget Event
+patternLabel s = widget Label [#label := ("Pattern: " <>
+                              (Text.pack $ getPattern s))]
+
+failLabel :: State -> Widget Event
+failLabel Game {..} = widget Label
+  [ classes ["red"]
+  , #label := ("You have run out of guessess,\n the word was: " <>
+              (Text.pack secret))]
+
+getPattern :: State -> String
+getPattern Game {..} = intersperse ' ' $ f <$> secret
+  where f x | (toUpper x) `elem` correct = toUpper x
+--          | (toUpper x) `elem` hints = toUpper x -- hint button adds
+            | otherwise = '_'                      -- answer
+
+checkGuess :: State -> Char -> State
+checkGuess (Game c w s hi ch h words) g
+  | g' `elem` c = Game c w s "" (ch - 1) h words
+  | g' `elem` w = Game c w s "" (ch - 1) h words
+  | g' `elem` s = Game (c ++ [g']) w s "" ch h words
+  | otherwise = Game c (w ++ [g']) s "" (ch - 1) h words
+  where g' = toUpper g
+
+view' :: State -> AppView Window Event
+view' s@(Game {..}) =
   bin
     Window [ #title := "Hangman"
            , on #deleteEvent (const (True, Quit))
@@ -69,35 +132,66 @@ view' Game {..} =
            , #heightRequest := 480
            ]
     $ paned
-        [#wideHandle := True]
-        (pane defaultPaneProperties { resize = True } $
-          widget Image [#file := (hangman !! try) ])
-        (pane defaultPaneProperties { resize = True, shrink = False } $
-          container Box []
-            [ widget Button []
-            , widget CheckButton []
-            , widget Label [#label := (hangman !! try)]
-            ])
+        [#wideHandle := False]
+        (pane defaultPaneProperties { resize = False} $
+          widget Image [#file := (hangman !! (chances - 1)) ])
+        (pane defaultPaneProperties { resize = False, shrink = False } $
+          container Box [#orientation := OrientationVertical]
+            [ BoxChild defaultBoxChildProperties
+                { padding = 10, expand = True } $ patternLabel s
+            , BoxChild defaultBoxChildProperties
+                { padding = 10, expand = True } $ wrongGuessesLabel s
+            , BoxChild defaultBoxChildProperties
+                { padding = 10 } $ stateBox s])
 
-update' :: State -> Event Char -> Transition State (Event Char)
-update' (Game c w h s ch t p) (Guess a) =
-    Transition (Game (c ++ [a]) w h s ch (t + 1) p) (return Nothing)
-update' (Game c w h s ch t p) (Wrong a) = 
-    Transition (Game c (w ++ [a]) h s (ch - 1) (t + 1) p) (return Nothing)
-update' (Game c w h s ch t p) (GetHint a) = 
-    Transition (Game c w (h ++ [a]) s (ch - 1) (t + 1) p) (return Nothing)
+update' :: State -> Event -> Transition State Event
+update' a@(Game c w s hi ch h words) (Guess g)
+  | Text.null g    = Transition a (return Nothing)
+  | otherwise = Transition (checkGuess a g') (return Nothing)
+  where g' = last (Text.unpack g)
+
+update' (Game c w s hi ch h words) (GetHint hi') =
+  Transition (Game c w s [hi'] (ch - 1) h words) (return Nothing)
+
 update' _ Quit = Exit
-update' _ PlayAgain = Exit
+
+update' (Game c w s hi ch h words) (PlayAgain s') =
+  Transition (Game "" "" s' "" (length h) h words) (return Nothing)
+
+update' s _ = Transition s (return Nothing)
+
+styles :: ByteString
+styles = mconcat
+  [ "button {border: 2px solid gray; font-weight: 800; }"
+  , ".red {font-style: italic; font-size: 1.5em; color: red; }"
+  , ".blue {font-style: italic; font-size: 1.5em; color: blue; }"
+  ]
 
 main :: IO ()
 main = do
-  words  <-  lines <$> readFile "assets/dictionary"
-  secret <-  getSecret words
-  paths  <-  sort . filter (isPrefixOf "Hangman") <$> getDirectoryContents "assets/"
-  void $ run App
-    { view = view'
-    , update = update'
-    , inputs = []
-    , initialState = Game "" "" "" secret (length secret) 0 $
-      (Text.pack . ((++) "assets/") <$> paths)
-    }
+  void $ Gtk.init Nothing
+
+  screen <- maybe (fail "No screen :(") return =<< Gdk.screenGetDefault
+  p      <- Gtk.cssProviderNew
+  Gtk.cssProviderLoadFromData p styles
+  Gtk.styleContextAddProviderForScreen
+    screen
+    p
+    (fromIntegral Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+  void . async $ do
+    words  <-  lines <$> readFile "assets/dictionary"
+    secret <-  getRandom words
+    paths  <-  reverse . sort . filter (isPrefixOf "Hangman") <$>
+                 getDirectoryContents "assets/"
+    let chances = length paths
+
+    void $ runLoop (App { view = view'
+                   , update = update'
+                   , inputs = []
+                   , initialState = Game "" "" secret "" chances
+                       (Text.pack . ((++) "assets/") <$> paths) words
+                   })
+    Gtk.mainQuit
+  Gtk.main
+
