@@ -10,7 +10,6 @@ stack exec hangman-declarative-exe
 ```
 
 ## Screenshots
-<center>
+
 ![](screenshot_1.png)
 ![](screenshot_2.png)
-</center>
