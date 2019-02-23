@@ -1,0 +1,57 @@
+name:                hangman-declarative
+version:             0.1.0.0
+github:              "rszczers/hangman-declarative"
+license:             BSD3
+author:              "Rafał Szczerski"
+maintainer:          "rafal.szczerski@gmail.com"
+copyright:           "2019 Rafał Szczerski"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/rszczers/hangman-declarative#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- gi-gtk
+- gi-gtk-declarative
+- gi-gtk-declarative-app-simple
+- text
+- pipes
+- pipes-extras
+- vector
+- random
+- directory
+
+library:
+  source-dirs: src
+
+executables:
+  hangman-declarative-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hangman-declarative
+
+tests:
+  hangman-declarative-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hangman-declarative
