@@ -43,8 +43,8 @@ data Event = Guess Text
 
 stateBox :: State -> Widget Event
 stateBox s@(Game {..}) | chances > 1 = gameBox s
-                      | otherwise   = endBox s
-
+ i                     | otherwise   = endBox s
+ 
 gameBox :: State -> Widget Event
 gameBox s = container Box [#orientation := OrientationVertical]
   [ BoxChild defaultBoxChildProperties { padding = 10 } guessBox
@@ -100,17 +100,18 @@ guessEntry = widget Entry [#text := "", onM #activate toGuessEvent]
           return input
 
 patternLabel :: State -> Widget Event
-patternLabel s = widget Label [#label := ("Pattern: " <>
-                              (Text.pack $ getPattern s))]
+patternLabel s = widget Label [ Classes ["pattern"]
+                              , #label := ("Pattern: " <>
+                                          (Text.pack $ getPattern s))]
 
 failLabel :: State -> Widget Event
-failLabel Game {..} = widget Label
+failLabeli Game {..} = widget Label
   [ classes ["red"]
   , #label := ("You have run out of guessess,\n the word was: " <>
               (Text.pack secret))]
 
 getPattern :: State -> String
-getPattern Game {..} = intersperse ' ' $ f <$> secret
+getPatterin Game {..} = intersperse ' ' $ f <$> secret
   where f x | (toUpper x) `elem` correct = toUpper x
 --          | (toUpper x) `elem` hints = toUpper x -- hint button adds
             | otherwise = '_'                      -- answer
@@ -128,21 +129,23 @@ view' s@(Game {..}) =
   bin
     Window [ #title := "Hangman"
            , on #deleteEvent (const (True, Quit))
-           , #widthRequest := 640
+           , #widthRequest  := 640
            , #heightRequest := 480
            ]
-    $ paned
-        [#wideHandle := False]
-        (pane defaultPaneProperties { resize = False} $
-          widget Image [#file := (hangman !! (chances - 1)) ])
-        (pane defaultPaneProperties { resize = False, shrink = False } $
-          container Box [#orientation := OrientationVertical]
-            [ BoxChild defaultBoxChildProperties
-                { padding = 10, expand = True } $ patternLabel s
-            , BoxChild defaultBoxChildProperties
-                { padding = 10, expand = True } $ wrongGuessesLabel s
-            , BoxChild defaultBoxChildProperties
-                { padding = 10 } $ stateBox s])
+    $ container Box [#orientation := OrientationHorizontal]
+        [ BoxChild defaultBoxChildProperties
+            { padding = 20, expand = True } $
+            widget Image [#file := (hangman !! (chances - 1))]
+        , BoxChild defaultBoxChildProperties { padding = 10, expand = True } $
+            container Box [#orientation := OrientationVertical]
+              [ BoxChild defaultBoxChildProperties
+                  { padding = 10, expand = True } $ patternLabel s
+              , BoxChild defaultBoxChildProperties
+                  { padding = 10, expand = True } $ wrongGuessesLabel s
+              , BoxChild defaultBoxChildProperties
+                  { padding = 10 } $ stateBox s
+              ]
+        ]     
 
 update' :: State -> Event -> Transition State Event
 update' a@(Game c w s hi ch h words) (Guess g)
@@ -158,13 +161,12 @@ update' _ Quit = Exit
 update' (Game c w s hi ch h words) (PlayAgain s') =
   Transition (Game "" "" s' "" (length h) h words) (return Nothing)
 
-update' s _ = Transition s (return Nothing)
-
 styles :: ByteString
 styles = mconcat
-  [ "button {border: 2px solid gray; font-weight: 800; }"
-  , ".red {font-style: italic; font-size: 1.5em; color: red; }"
-  , ".blue {font-style: italic; font-size: 1.5em; color: blue; }"
+  [ "button {border: 2px solid gray; font-weight: 800;}"
+  , ".pattern {font-size: 2em;}"
+  , ".red {font-style: italic; font-size: 1.5em; color: red;}"
+  , ".blue {font-style: italic; font-size: 1.5em; color: blue;}"
   ]
 
 main :: IO ()
@@ -180,7 +182,7 @@ main = do
     (fromIntegral Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
   void . async $ do
-    words  <-  lines <$> readFile "assets/dictionary"
+    words  <-  (map . map) toUpper <$> lines <$> readFile "assets/dictionary"
     secret <-  getRandom words
     paths  <-  reverse . sort . filter (isPrefixOf "Hangman") <$>
                  getDirectoryContents "assets/"
@@ -194,4 +196,3 @@ main = do
                    })
     Gtk.mainQuit
   Gtk.main
-
