@@ -5,19 +5,21 @@
 
 module Main where
 
-import Utils                
+import Utils
+import Score
+import Chances
 import Control.Monad                      (void)
-import Data.Text                          (Text, snoc, null)
+import Data.Text                          (Text)
 import Data.List                          (intersperse, intercalate)
 import qualified Data.Text                as Text
 import GI.Gtk                             ( entryGetText, entrySetText
-                                          ,Box (..), Button (..)
-                                          ,Label (..), Orientation (..)
-                                          ,Window (..), CheckButton (..)
-                                          ,Image (..), ListBoxRow (..)
-                                          ,ListBox (..), Entry (..))
+                                          , Box (..), Button (..)
+                                          , Label (..), Orientation (..)
+                                          , Window (..), Image (..)
+                                          , Entry (..) )
 import qualified GI.Gtk                   as Gtk
 import qualified GI.Gdk                   as Gdk
+import qualified Data.Set                 as Set
 import GI.Gtk.Declarative
 import GI.Gtk.Declarative.App.Simple
 import Data.Char                          (toUpper)
@@ -25,37 +27,57 @@ import Data.List                          (isPrefixOf, sort, (\\))
 import System.Directory                   (getDirectoryContents)
 import Data.ByteString                    (ByteString)
 import Control.Concurrent.Async           (async)
+import qualified Data.Vector              as Vector
+import Data.List.Split                    (splitOn)
+import Data.Functor                       ((<&>))
 
-data State = Game { correct    :: [Char]
-                  , wrongs     :: [Char]
-                  , secret     :: [Char]
-                  , hint       :: [Char]
-                  , chances    :: Int
-                  , hangman    :: [Text]
-                  , dictionary :: [[Char]]
+data State = Game { correct      :: [Char]
+                  , wrongs       :: [Char]
+                  , secret       :: [Char]
+                  , hint         :: [Char]
+                  , chances      :: Chances Int         -- Custom ADT
+                  , hangman      :: [Text]
+                  , dictionary   :: [[Char]]
+                  , scores       :: Score (Int, String) -- Custom ADT
+                  , showScores   :: Bool
                   }
 
 data Event = Guess Text
            | GetHint Char
            | PlayAgain [Char]
+           | SeeScores
+           | UnseeScores
            | Quit
 
 stateBox :: State -> Widget Event
-stateBox s@(Game {..}) | chances > 1 = gameBox s
-                       | otherwise   = endBox s
- 
+stateBox s@(Game {..})
+  | didWin            = winBox s
+  | (chances /= None) = gameBox s
+  | otherwise         = endBox s
+  where
+    didWin = Set.null $ Set.difference sec guessed
+    sec = Set.fromList secret
+    guessed = Set.fromList correct
+
 gameBox :: State -> Widget Event
 gameBox s = container Box [#orientation := OrientationVertical]
   [ BoxChild defaultBoxChildProperties { padding = 10 } guessBox
   , BoxChild defaultBoxChildProperties { padding = 10 } $ hintLabel s
-  , BoxChild defaultBoxChildProperties { padding = 5 } $ hintBtn s
+  , BoxChild defaultBoxChildProperties { padding =  5 } $ hintBtn s
   ]
 
 endBox :: State -> Widget Event
 endBox s = container Box [#orientation := OrientationVertical]
   [ BoxChild defaultBoxChildProperties { padding = 10 } $ failLabel s
-  , BoxChild defaultBoxChildProperties { padding = 5 } $ playAgainBtn s
-  , BoxChild defaultBoxChildProperties { padding = 5 } quitBtn
+  , BoxChild defaultBoxChildProperties { padding =  5 } $ playAgainBtn s
+  , BoxChild defaultBoxChildProperties { padding =  5 } $ quitBtn s
+  ]
+
+winBox :: State -> Widget Event
+winBox s = container Box [#orientation := OrientationVertical]
+  [ BoxChild defaultBoxChildProperties { padding = 10 } $ winLabel s
+  , BoxChild defaultBoxChildProperties { padding =  5 } $ playAgainBtn s
+  , BoxChild defaultBoxChildProperties { padding =  5 } $ quitBtn s
   ]
 
 guessBox :: Widget Event
@@ -64,12 +86,27 @@ guessBox = container Box [#orientation := OrientationHorizontal]
   , BoxChild defaultBoxChildProperties { expand = True } guessEntry]
 
 playAgainBtn :: State -> Widget Event
-playAgainBtn Game {..} = widget Button
+playAgainBtn s@(Game {..}) = widget Button
   [#label := "Play Again!", onM #clicked playAgain']
-  where playAgain' = \b -> PlayAgain <$> getRandom dictionary
+  where
+    playAgain' b = do
+      writeScores s
+      PlayAgain <$> getRandom dictionary
 
-quitBtn :: Widget Event
-quitBtn = widget Button [#label := "No More!", on #clicked Quit]
+seeScoresBtn :: Widget Event
+seeScoresBtn = widget Button
+  [#label := "See last scores", on #clicked SeeScores]
+
+unseeScoresBtn :: Widget Event
+unseeScoresBtn = widget Button
+  [#label := "Back", on #clicked UnseeScores]
+
+quitBtn :: State -> Widget Event
+quitBtn s = widget Button [#label := "Save and quit", onM #clicked quit']
+  where
+    quit' b = do
+      writeScores s
+      return Quit
 
 hintBtn :: State -> Widget Event
 hintBtn Game {..} = widget Button
@@ -103,11 +140,38 @@ patternLabel s = widget Label [ Classes ["pattern"]
                               , #label := ("Pattern: " <>
                                           (Text.pack $ getPattern s))]
 
+genScoresLabels :: Show a => Score a -> BoxChild Event
+genScoresLabels s = container Box [#orientation := OrientationVertical] $
+  Vector.cons makeTitle $
+  (Vector.fromList $ toList $ (makeLabels <$> (getTail s))) <&> makeChild
+  where
+    makeTitle = widget Label [classes ["title"], #label := "Last games:"]
+    makeLabels = \l -> widget Label [#label := (Text.pack . show $ l)]
+    makeChild x = BoxChild defaultBoxChildProperties
+      {padding = 5, expand = False} $ x
+
+currentScoreLabel :: State -> Widget Event
+currentScoreLabel Game {..} = widget Label
+    [ Classes ["score"]
+    , #label := ("Score: " <> (Text.pack . show . fst . getHead $ scores))
+    ]
+
+bestScoreLabel :: State -> Widget Event
+bestScoreLabel Game {..} = widget Label
+    [ Classes ["score"]
+    , #label := ("Best: " <> (Text.pack . show . fst . maximum $ scores))
+    ]
+
 failLabel :: State -> Widget Event
 failLabel Game {..} = widget Label
   [ classes ["red"]
   , #label := ("You have run out of guessess,\n the word was: " <>
               (Text.pack secret))]
+
+winLabel :: State -> Widget Event
+winLabel Game {..} = widget Label
+  [ classes ["green"]
+  , #label := "Horay, you won!"]
 
 getPattern :: State -> String
 getPattern Game {..} = intersperse ' ' $ f <$> secret
@@ -116,12 +180,28 @@ getPattern Game {..} = intersperse ' ' $ f <$> secret
             | otherwise = '_'                      -- answer
 
 checkGuess :: State -> Char -> State
-checkGuess (Game c w s hi ch h words) g
-  | g' `elem` c = Game c w s "" (ch - 1) h words
-  | g' `elem` w = Game c w s "" (ch - 1) h words
-  | g' `elem` s = Game (c ++ [g']) w s "" ch h words
-  | otherwise = Game c (w ++ [g']) s "" (ch - 1) h words
+checkGuess state@(Game c w s hi ch h words scores _) g
+  | g' `elem` c = state { hint = ""            -- already guessed
+                        , chances = normalize $
+                          ((pure (\x -> x - 1)) <*> ch)            -- Chances applicative usage
+                        , scores = mapHead penalty scores }
+  | g' `elem` w = state { hint = ""            -- already wrong
+                        , chances = normalize $
+                          ((pure (\x -> x - 1)) <*> ch)            -- Chances applicative usage 
+                        , scores = mapHead penalty scores }
+  | g' `elem` s = state { correct = (c++ [g']) -- correct
+                        , hint = ""
+                        , scores = mapHead (\(x, y) -> (x + 1, y)) scores }
+  | otherwise   = state { wrongs = (w ++ [g']) -- wrong
+                        , hint = ""
+                        , chances = normalize $
+                          ((pure (\x -> x - 1)) <*> ch)            -- Chances applicative usage
+                        , scores = mapHead mistake scores }
   where g' = toUpper g
+        penalty (x, y) | x >= 2 = (x - 2, y) 
+                       | otherwise = (0, y)
+        mistake (x, y) | x >= 1 = (x - 1, y)
+                       | otherwise = (0, y)
 
 view' :: State -> AppView Window Event
 view' s@(Game {..}) =
@@ -132,41 +212,84 @@ view' s@(Game {..}) =
            , #heightRequest := 480
            ]
     $ container Box [#orientation := OrientationHorizontal]
-        [ BoxChild defaultBoxChildProperties
-            { padding = 20, expand = True } $
-            widget Image [#file := (hangman !! (chances - 1))]
-        , BoxChild defaultBoxChildProperties { padding = 10, expand = True } $
+        [ case (showScores) of
+            False -> BoxChild defaultBoxChildProperties
+              { padding = 20, expand = True } $
+                widget Image [#file := (hangman !! (fromChancesToHangman $ chances ))]
+            True -> genScoresLabels $ format scores
+        , BoxChild defaultBoxChildProperties { padding = 10
+                                             , expand = True } $
             container Box [#orientation := OrientationVertical]
               [ BoxChild defaultBoxChildProperties
+                  { padding = 10, expand = True } $ currentScoreLabel s
+              , BoxChild defaultBoxChildProperties
+                  { padding = 10, expand = True } $ bestScoreLabel s
+              , BoxChild defaultBoxChildProperties
                   { padding = 10, expand = True } $ patternLabel s
               , BoxChild defaultBoxChildProperties
                   { padding = 10, expand = True } $ wrongGuessesLabel s
               , BoxChild defaultBoxChildProperties
                   { padding = 10 } $ stateBox s
+              , BoxChild defaultBoxChildProperties
+                  { padding = 10 } $ case (showScores) of
+                     False -> seeScoresBtn
+                     True  -> unseeScoresBtn
               ]
-        ]     
+        ]
 
 update' :: State -> Event -> Transition State Event
-update' a@(Game c w s hi ch h words) (Guess g)
-  | Text.null g    = Transition a (return Nothing)
-  | otherwise = Transition (checkGuess a g') (return Nothing)
+update' state@(Game c w s hi ch h words score _) (Guess g)
+  | Text.null g = Transition state (return Nothing)
+  | otherwise   = Transition (checkGuess state g') (return Nothing)
   where g' = last (Text.unpack g)
 
-update' (Game c w s hi ch h words) (GetHint hi') =
-  Transition (Game c w s [hi'] (ch - 1) h words) (return Nothing)
+update' state@(Game c w s hi ch h words score _) (GetHint hi') =
+  Transition (state { hint = [hi']
+                    , chances = normalize $ 
+                      ((pure (\x -> x - 1)) <*> ch) -- Choices applicative 
+                    }) (return Nothing)             -- (<*>) and pure use 
 
 update' _ Quit = Exit
 
-update' (Game c w s hi ch h words) (PlayAgain s') =
-  Transition (Game "" "" s' "" (length h) h words) (return Nothing)
+update' state@(Game c w s hi ch h words score sScore) (PlayAgain s') =
+  Transition (state {correct = ""
+                    , wrongs = ""
+                    , secret = s'
+                    , hint   = ""
+                    , chances = return $ (length h - 1)
+                    , scores = pure (0, s') <> score -- Score monoidal
+                    })                               -- append use
+                    (return Nothing)
+
+update' state (SeeScores) =
+  Transition (state { showScores = True }) (return Nothing)
+
+update' state (UnseeScores) =
+  Transition (state { showScores = False }) (return Nothing)
 
 styles :: ByteString
 styles = mconcat
-  [ "button {border: 2px solid gray; font-weight: 800;}"
+  [ "button   {border: 2px solid gray; font-weight: 800;}"
+  , ".title   {font-size: 1.5em;}"
   , ".pattern {font-size: 2em;}"
-  , ".red {font-style: italic; font-size: 1.5em; color: red;}"
-  , ".blue {font-style: italic; font-size: 1.5em; color: blue;}"
+  , ".score   {background-color: white; font-size:  2em; color: #0e1f3e;}"
+  , ".red     {font-style: italic; font-size: 1.5em; color: red;}"
+  , ".blue    {font-style: italic; font-size: 1.5em; color: blue;}"
+  , ".green   {font-style: italic; font-size: 1.5em; color: green;}"
   ]
+
+readScores :: IO (Score (Int, String))
+readScores = do
+  l <- (fmap (splitOn ",")) <$> words <$> readFile "assets/highscores"
+  let scores = fromList $ take 10 $ (\[x, y] -> (read x :: Int, y)) <$> l
+  return scores
+
+writeScores :: State -> IO ()
+writeScores Game{..} = void . async $
+  writeFile "assets/highscores" $ show' scores
+  where
+    show' Empty = ""
+    show' (Cons (x, y) cs) = show x ++ "," ++ y ++ " " ++ show' cs
 
 main :: IO ()
 main = do
@@ -181,17 +304,30 @@ main = do
     (fromIntegral Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
   void . async $ do
-    words  <-  (map . map) toUpper <$> lines <$> readFile "assets/dictionary"
+    words  <-  (map . map) toUpper <$>
+               lines <$>
+               readFile "assets/dictionary"
     secret <-  getRandom words
     paths  <-  reverse . sort . filter (isPrefixOf "Hangman") <$>
                  getDirectoryContents "assets/"
-    let chances = length paths
+    scores <- readScores
+    let chances = (length paths) - 1
 
     void $ runLoop (App { view = view'
                    , update = update'
                    , inputs = []
-                   , initialState = Game "" "" secret "" chances
+                   , initialState = Game
+                       ""
+                       ""
+                       secret
+                       ""
+                       (pure chances)       -- Chances applicative pure 
+                                            -- use
                        (Text.pack . ((++) "assets/") <$> paths) words
+                       ((Cons (0, secret) Empty) <> scores) -- Monoidal
+                                                            -- append    
+                                                            -- use
+                       False
                    })
     Gtk.mainQuit
   Gtk.main

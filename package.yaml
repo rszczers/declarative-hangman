@@ -30,6 +30,11 @@ dependencies:
 - directory
 - bytestring
 - async
+- hspec
+- QuickCheck
+- containers
+- vector
+- split
 
 library:
   source-dirs: src
